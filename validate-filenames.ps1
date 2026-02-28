@@ -1,6 +1,10 @@
 # ==============================================================================
 # SCRIPT DE VALIDACIÓN DE NOMBRES DE ARCHIVO
 # Genera reporte de archivos con nombres problemáticos (sin modificar nada)
+#
+# Autor: Alejandro Ariaz (@Ariaz39)
+# Licencia: MIT License
+# Repositorio: https://github.com/Ariaz39/sharepoint-from-onedrive-migration-tool
 # ==============================================================================
 #
 # USO:

@@ -1,5 +1,10 @@
 # 🚀 Migración OneDrive → SharePoint
 
+![PowerShell](https://img.shields.io/badge/PowerShell-5391FE?style=for-the-badge&logo=powershell&logoColor=white)
+![SharePoint](https://img.shields.io/badge/SharePoint-0078D4?style=for-the-badge&logo=microsoft-sharepoint&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
+![PnP](https://img.shields.io/badge/PnP-PowerShell-blue?style=for-the-badge)
+
 Sistema automatizado y optimizado para migrar contenido de OneDrive personal a bibliotecas de SharePoint con autenticación por certificado, progreso en tiempo real y verificación automática.
 
 **Tecnología:** PnP PowerShell
@@ -113,8 +118,7 @@ SharePointMigration\
 │   └── PnPMigrationCert.cer         # Certificado público (para Entra ID)
 │
 ├── Documentación
-│   ├── README.md                    # Este archivo
-│   └── guia-migracion-onedrive-sharepoint.md  # Guía detallada
+│   └── README.md                    # Este archivo
 │
 └── Logs/                            # Generado automáticamente
     ├── migration-report-v4-*.csv    # Reporte de migración
@@ -637,15 +641,27 @@ Al contribuir a este proyecto:
 
 Para más información:
 
-- 📖 Guía detallada: `guia-migracion-onedrive-sharepoint.md`
-- 🐛 Reportar problemas: Crear issue en el repositorio
+- 🐛 Reportar problemas: [Crear issue en el repositorio](https://github.com/Ariaz39/sharepoint-from-onedrive-migration-tool/issues)
 - 💡 Sugerencias: Contribuir con pull requests
+- 📧 Contacto: [LinkedIn - Alejandro Ariaz](https://www.linkedin.com/in/alejandro-ariaz/)
+
+---
+
+## 👨‍💻 Autor
+
+**Desarrollado por:** Alejandro Ariaz
+**LinkedIn:** [linkedin.com/in/alejandro-ariaz](https://www.linkedin.com/in/alejandro-ariaz/)
+**GitHub:** [@Ariaz39](https://github.com/Ariaz39)
+
+Si este proyecto te fue útil, no dudes en dar una ⭐ al repositorio o compartirlo.
 
 ---
 
 ## 📄 Licencia
 
-Uso interno. Mantener las credenciales seguras.
+Este proyecto está bajo la Licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
+
+**¿Qué significa?** Puedes usar, modificar y distribuir este código libremente, incluso para proyectos comerciales. Solo se requiere mantener el aviso de copyright.
 
 ---
 

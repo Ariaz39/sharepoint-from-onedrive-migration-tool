@@ -1,5 +1,10 @@
 # ==============================================================================
 # SCRIPT DE MIGRACIÓN ONEDRIVE A SHAREPOINT - VERSIÓN OPTIMIZADA (V4)
+#
+# Autor: Alejandro Ariaz (@Ariaz39)
+# Licencia: MIT License
+# Repositorio: https://github.com/Ariaz39/sharepoint-from-onedrive-migration-tool
+#
 # Requiere: PowerShell 7+ y PnP.PowerShell
 # Novedades V4: Paralelismo aumentado (25 hilos), lotes 1000, paginación configurable
 # Optimizado para: 1 millón de archivos (versión conservadora)

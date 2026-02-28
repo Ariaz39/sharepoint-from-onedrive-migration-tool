@@ -1,6 +1,10 @@
 # ==============================================================================
 # SCRIPT DE VERIFICACIÓN DE ALMACENAMIENTO
 # Compara OneDrive (origen) vs SharePoint (destino)
+#
+# Autor: Alejandro Ariaz (@Ariaz39)
+# Licencia: MIT License
+# Repositorio: https://github.com/Ariaz39/sharepoint-from-onedrive-migration-tool
 # ==============================================================================
 #
 # USO:
