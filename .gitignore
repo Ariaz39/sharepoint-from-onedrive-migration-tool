@@ -1,0 +1,26 @@
+# ============================================================
+# ARCHIVOS SENSIBLES - NO VERSIONAR
+# ============================================================
+# Este archivo protege información confidencial de la empresa
+
+# Environment variables (contains sensitive data)
+.env
+
+# Certificate files (authentication credentials)
+*.pfx
+*.pem
+*.cer
+*.crt
+*.key
+
+# Logs and Reports (contain company data, file paths, user emails)
+Logs/
+*.log
+*.csv
+
+# PowerShell backups
+*.ps1.bak
+
+# Temporary files
+*.tmp
+*.temp
