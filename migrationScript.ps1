@@ -371,6 +371,15 @@ foreach ($email in $userList) {
         Write-Host "  Velocidad promedio: $avgRate archivos/min" -ForegroundColor White
         Write-Host "  ========================================" -ForegroundColor Cyan
 
+        # Escribir resumen al final del reporte CSV
+        Add-Content -Path $reportFile -Value ""
+        Add-Content -Path $reportFile -Value ";;RESUMEN DE MIGRACIÓN - $email;;;"
+        Add-Content -Path $reportFile -Value "Archivos procesados;$processedFiles;;;;"
+        Add-Content -Path $reportFile -Value "Exitosos;$successCount;;;;"
+        Add-Content -Path $reportFile -Value "Errores;$errorCount;;;;"
+        Add-Content -Path $reportFile -Value "Tiempo total;$($totalTime.Hours)h $($totalTime.Minutes)m $($totalTime.Seconds)s;;;;"
+        Add-Content -Path $reportFile -Value "Velocidad promedio;$avgRate archivos/min;;;;"
+
     } catch {
         Write-Host "  [ERROR FATAL] $email : $($_.Exception.Message)" -ForegroundColor Red
     }
