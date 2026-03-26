@@ -64,7 +64,8 @@ $WARNING_CHARS = @('#', '%', '&', '{', '}', '~', '\', '/')
 $certPath = Join-Path $PSScriptRoot "PnPMigrationCert.pfx"
 $certPassword = ConvertTo-SecureString -String $CERT_PASSWORD -AsPlainText -Force
 $logPath = Join-Path $PSScriptRoot "Logs"
-$reportFile = Join-Path $logPath "filename-validation-report-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
+$userName = $UserEmail.Split('@')[0]
+$reportFile = Join-Path $logPath "filename-validation-report-$userName-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
 
 if (-not (Test-Path $logPath)) { New-Item -ItemType Directory -Path $logPath | Out-Null }
 
