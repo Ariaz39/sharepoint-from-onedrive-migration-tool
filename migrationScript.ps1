@@ -146,7 +146,7 @@ foreach ($email in $userList) {
         if ($SkipExisting) {
             Write-Host "  Verificando archivos existentes..." -ForegroundColor DarkGray
             $allDestFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize $pageSize -Connection $destConn | Where-Object { $_.FileSystemObjectType -eq "File" }
-            foreach ($df in $allDestFiles) { $destCache[$df.FieldValues.FileRef] = $true }
+            foreach ($df in $allDestFiles) { $destCache[$df.FieldValues.FileRef] = $df.FieldValues.Modified }
         }
 
         # Aplicar Filtros: Scope y Exclusiones
@@ -179,12 +179,18 @@ foreach ($email in $userList) {
             }
             if ($isExcluded) { continue }
             
-            # FILTRO 3: Archivos Existentes
+            # FILTRO 3: Archivos Existentes (comparación por fecha de modificación)
             $expectedDestPath = $sourceRelUrl -replace [regex]::Escape($baseDocUrl), $destBaseUrl
             if ($SkipExisting -and $destCache.ContainsKey($expectedDestPath)) {
-                $logLine = "$((Get-Date).ToString('o')),$email,Migrate,$sourceRelUrl,SKIPPED,File exists in destination"
-                Add-Content -Path $reportFile -Value $logLine
-                continue
+                $sourceModified = $file.FieldValues.Modified
+                $destModified   = $destCache[$expectedDestPath]
+                # Tolerancia de 20 segundos para evitar falsos positivos por zona horaria o precisión
+                if (($sourceModified - $destModified).TotalSeconds -le 20) {
+                    $logLine = "$((Get-Date).ToString('o')),$email,Migrate,$sourceRelUrl,SKIPPED,File exists and source is not newer (delta: $([math]::Round(($sourceModified - $destModified).TotalSeconds,1))s)"
+                    Add-Content -Path $reportFile -Value $logLine
+                    continue
+                }
+                # Source es más nuevo → sobreescribir (no hacer continue, cae al bloque de migración)
             }
 
             # Construir ruta RELATIVA a la biblioteca (sin /sites/.../library)
