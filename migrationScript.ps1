@@ -56,7 +56,17 @@ Write-Host "ThrottleLimit: $throttleLimit | BatchSize: $batchSize | PageSize: $p
 if ($ScopeFolder) { Write-Host "[SCOPE ACTIVADO] Solo se migrará: $ScopeFolder" -ForegroundColor Yellow }
 Write-Host ""
 
-# 2. Función de Transferencia Optimizada
+# 2. Función de Sanitización de Nombres
+function Format-SafeName {
+    param([string]$Name)
+    # Reemplazar caracteres prohibidos por SharePoint
+    $sanitized = $Name -replace '["\*:<>?|\\]', '_'
+    # Colapsar espacios múltiples y limpiar extremos
+    $sanitized = ($sanitized -replace '\s+', ' ').Trim()
+    return $sanitized
+}
+
+# 3. Función de Transferencia Optimizada
 function Transfer-File {
     param(
         $SourceUrl, $DestSiteUrl,
@@ -79,8 +89,10 @@ function Transfer-File {
         while (-not $success -and $retryCount -lt $MaxRetries) {
             $tempFile = $null
             try {
-                # Extraer el nombre original del archivo
-                $originalFileName = $FileName.Substring($FileName.LastIndexOf('/') + 1)
+                # Extraer el nombre original del archivo y sanitizarlo
+                $rawFileName = $FileName.Substring($FileName.LastIndexOf('/') + 1)
+                $originalFileName = Format-SafeName -Name $rawFileName
+                $nameSanitized = $originalFileName -ne $rawFileName
 
                 # Crear archivo temporal
                 $tempFile = [System.IO.Path]::GetTempFileName()
@@ -88,11 +100,12 @@ function Transfer-File {
                 # Descargar del origen
                 Get-PnPFile -Url $FileName -Path ([System.IO.Path]::GetDirectoryName($tempFile)) -FileName ([System.IO.Path]::GetFileName($tempFile)) -Connection $sourceConn -AsFile -Force -ErrorAction Stop
 
-                # Subir al destino CON EL NOMBRE ORIGINAL (usar -NewFileName no -FileName)
+                # Subir al destino con el nombre sanitizado
                 Add-PnPFile -Path $tempFile -Folder $DestFolderPath -NewFileName $originalFileName -Connection $destConn -ErrorAction Stop | Out-Null
 
                 $success = $true
-                return [PSCustomObject]@{ Status = "OK"; Item = $FileName; User = $UserEmail; Message = "Copiado" }
+                $message = if ($nameSanitized) { "Copiado (nombre sanitizado: '$rawFileName' -> '$originalFileName')" } else { "Copiado" }
+                return [PSCustomObject]@{ Status = "OK"; Item = $FileName; User = $UserEmail; Message = $message }
             } catch {
                 $retryCount++
                 # Retry con backoff exponencial
@@ -188,10 +201,12 @@ foreach ($email in $userList) {
             }
 
             # Construir ruta RELATIVA a la biblioteca (sin /sites/.../library)
+            # Sanitizar cada segmento de carpeta individualmente
             $relativePathFromDocs = $sourceRelUrl -replace [regex]::Escape($baseDocUrl), ""
             $relativePathFromDocs = $relativePathFromDocs.TrimStart('/')
             $destFolderRelative = if ($relativePathFromDocs.Contains('/')) {
-                $destLibraryRelative + "/" + $relativePathFromDocs.Substring(0, $relativePathFromDocs.LastIndexOf('/'))
+                $folderSegments = $relativePathFromDocs.Substring(0, $relativePathFromDocs.LastIndexOf('/')).Split('/') | ForEach-Object { Format-SafeName -Name $_ }
+                $destLibraryRelative + "/" + ($folderSegments -join '/')
             } else {
                 $destLibraryRelative
             }
@@ -264,8 +279,9 @@ foreach ($email in $userList) {
         $totalTime = ((Get-Date) - $startTime).TotalSeconds
         Write-Host "  ✓ Estructura de carpetas creada ($folderCount rutas en ${totalTime}s)" -ForegroundColor Green
 
-        # Obtener definición de función para uso paralelo
+        # Obtener definición de funciones para uso paralelo
         $transferFunctionDef = ${function:Transfer-File}.ToString()
+        $formatSafeNameDef = ${function:Format-SafeName}.ToString()
 
         # 4. Procesamiento en Lotes y Paralelo (Evita el colapso de RAM)
         $migrationStartTime = Get-Date
@@ -296,7 +312,8 @@ foreach ($email in $userList) {
             Write-Host "  -> Lote $currentBatch/$totalBatches ($($batch.Count) archivos) | Progreso: $percentComplete% | ✓ $successCount ✗ $errorCount" -ForegroundColor DarkGray
 
             $results = $batch | ForEach-Object -Parallel {
-                # Recrear la función en el contexto paralelo
+                # Recrear funciones en el contexto paralelo
+                ${function:Format-SafeName} = $using:formatSafeNameDef
                 ${function:Transfer-File} = $using:transferFunctionDef
 
                 Transfer-File -SourceUrl $_.SourceUrl `
