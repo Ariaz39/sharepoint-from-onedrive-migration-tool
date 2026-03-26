@@ -61,8 +61,10 @@ Write-Host ""
 # 2. Función de Sanitización de Nombres
 function Format-SafeName {
     param([string]$Name)
-    # Reemplazar caracteres prohibidos por SharePoint
-    $sanitized = $Name -replace '["\*:<>?|\\]', '_'
+    # Reemplazar caracteres prohibidos o problemáticos en SharePoint/URLs
+    # Prohibidos estrictos: " * : < > ? | \
+    # Problemáticos en URLs/rutas: # % & @ ! $ ' ~ { }
+    $sanitized = $Name -replace '["\*:<>?|\\#%&@!$''~{}]', '_'
     # Colapsar espacios múltiples y limpiar extremos
     $sanitized = ($sanitized -replace '\s+', ' ').Trim()
     return $sanitized
