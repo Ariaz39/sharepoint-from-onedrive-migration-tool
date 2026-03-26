@@ -200,7 +200,7 @@ foreach ($email in $userList) {
             foreach ($excl in $excludedList) {
                 if ($directoryParts -contains $excl) {
                     $isExcluded = $true
-                    $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Scan;$sourceRelUrl;;SKIPPED;System folder excluded ($excl)"
+                    $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Scan;$sourceRelUrl;;SKIPPED;Carpeta Excluida por configuracion ($excl)"
                     Add-Content -Path $reportFile -Value $logLine
                     break
                 }
