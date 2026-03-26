@@ -98,9 +98,12 @@ function Transfer-File {
                 $safeFileName   = Format-SafeName -Name $rawFileName
                 $fileRenamed    = $safeFileName -ne $rawFileName
 
-                # Detectar si algún segmento de carpeta fue sanitizado comparando nombre a nombre
-                $rawFolderSegments  = $FileName.Substring(0, $FileName.LastIndexOf('/')).Split('/')
-                $folderRenamed      = ($rawFolderSegments | Where-Object { (Format-SafeName -Name $_) -ne $_ }).Count -gt 0
+                # Detectar qué segmentos de carpeta fueron sanitizados
+                $rawFolderSegments      = $FileName.Substring(0, $FileName.LastIndexOf('/')).Split('/')
+                $renamedFolderDetails   = $rawFolderSegments | Where-Object { $_ -ne "" } | ForEach-Object {
+                    $safe = Format-SafeName -Name $_
+                    if ($safe -ne $_) { "carpeta: '$_' -> '$safe'" }
+                }
 
                 # Crear archivo temporal
                 $tempFile = [System.IO.Path]::GetTempFileName()
@@ -114,8 +117,8 @@ function Transfer-File {
                 $success = $true
                 $destPath = "$DestFolderPath/$safeFileName"
                 $reasons  = @()
-                if ($fileRenamed)   { $reasons += "archivo: '$rawFileName' -> '$safeFileName'" }
-                if ($folderRenamed) { $reasons += "carpeta sanitizada en ruta destino" }
+                if ($fileRenamed)                        { $reasons += "archivo: '$rawFileName' -> '$safeFileName'" }
+                if ($renamedFolderDetails.Count -gt 0)  { $reasons += $renamedFolderDetails }
                 $message = if ($reasons.Count -gt 0) { "Copiado (sanitizado - $($reasons -join '; '))" } else { "Copiado" }
                 return [PSCustomObject]@{ Status = "OK"; Item = $FileName; DestPath = $destPath; User = $UserEmail; Message = $message }
             } catch {
