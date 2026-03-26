@@ -33,7 +33,9 @@ Get-Content $envFile | Where-Object { $_ -match "^[^#=]+=" } | ForEach-Object {
 $certPath = Join-Path $PSScriptRoot "PnPMigrationCert.pfx"
 $certPassword = ConvertTo-SecureString -String $CERT_PASSWORD -AsPlainText -Force
 $logPath = Join-Path $PSScriptRoot "Logs"
-$reportFile = Join-Path $logPath "migration-report-v4-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
+$firstUser = @($USERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })[0]
+$firstUserName = $firstUser.Split('@')[0]
+$reportFile = Join-Path $logPath "migration-report-v4-$firstUserName-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
 
 if (-not (Test-Path $logPath)) { New-Item -ItemType Directory -Path $logPath | Out-Null }
 "Timestamp,User,Step,Item,Status,Message" | Out-File $reportFile -Encoding UTF8
