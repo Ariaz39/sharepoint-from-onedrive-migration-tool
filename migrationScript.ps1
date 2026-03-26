@@ -38,7 +38,7 @@ $firstUserName = $firstUser.Split('@')[0]
 $reportFile = Join-Path $logPath "migration-report-v4-$firstUserName-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
 
 if (-not (Test-Path $logPath)) { New-Item -ItemType Directory -Path $logPath | Out-Null }
-"Timestamp;User;Step;Item;Status;Message" | Out-File $reportFile -Encoding UTF8
+"Timestamp;User;Step;SourcePath;DestPath;Status;Message" | Out-File $reportFile -Encoding UTF8
 
 # Convertir variables del .env a Arrays
 # IMPORTANTE: usar @() para forzar array y evitar problemas de indexación
@@ -94,9 +94,13 @@ function Transfer-File {
             $tempFile = $null
             try {
                 # Extraer el nombre original del archivo y sanitizarlo
-                $rawFileName = $FileName.Substring($FileName.LastIndexOf('/') + 1)
-                $originalFileName = Format-SafeName -Name $rawFileName
-                $nameSanitized = $originalFileName -ne $rawFileName
+                $rawFileName    = $FileName.Substring($FileName.LastIndexOf('/') + 1)
+                $safeFileName   = Format-SafeName -Name $rawFileName
+                $fileRenamed    = $safeFileName -ne $rawFileName
+
+                # Detectar si la carpeta destino difiere de la ruta origen (segmentos sanitizados)
+                $rawFolderPath  = $FileName.Substring(0, $FileName.LastIndexOf('/'))
+                $folderRenamed  = $DestFolderPath -ne $rawFolderPath
 
                 # Crear archivo temporal
                 $tempFile = [System.IO.Path]::GetTempFileName()
@@ -105,11 +109,15 @@ function Transfer-File {
                 Get-PnPFile -Url $FileName -Path ([System.IO.Path]::GetDirectoryName($tempFile)) -FileName ([System.IO.Path]::GetFileName($tempFile)) -Connection $sourceConn -AsFile -Force -ErrorAction Stop
 
                 # Subir al destino con el nombre sanitizado
-                Add-PnPFile -Path $tempFile -Folder $DestFolderPath -NewFileName $originalFileName -Connection $destConn -ErrorAction Stop | Out-Null
+                Add-PnPFile -Path $tempFile -Folder $DestFolderPath -NewFileName $safeFileName -Connection $destConn -ErrorAction Stop | Out-Null
 
                 $success = $true
-                $message = if ($nameSanitized) { "Copiado (nombre sanitizado: '$rawFileName' -> '$originalFileName')" } else { "Copiado" }
-                return [PSCustomObject]@{ Status = "OK"; Item = $FileName; User = $UserEmail; Message = $message }
+                $destPath = "$DestFolderPath/$safeFileName"
+                $reasons  = @()
+                if ($fileRenamed)   { $reasons += "archivo: '$rawFileName' -> '$safeFileName'" }
+                if ($folderRenamed) { $reasons += "carpeta sanitizada en ruta destino" }
+                $message = if ($reasons.Count -gt 0) { "Copiado (sanitizado - $($reasons -join '; '))" } else { "Copiado" }
+                return [PSCustomObject]@{ Status = "OK"; Item = $FileName; DestPath = $destPath; User = $UserEmail; Message = $message }
             } catch {
                 $retryCount++
                 # Retry con backoff exponencial
@@ -120,7 +128,7 @@ function Transfer-File {
                 }
 
                 if ($retryCount -ge $MaxRetries) {
-                    return [PSCustomObject]@{ Status = "ERROR"; Item = $FileName; User = $UserEmail; Message = $_.Exception.Message }
+                    return [PSCustomObject]@{ Status = "ERROR"; Item = $FileName; DestPath = ""; User = $UserEmail; Message = $_.Exception.Message }
                 }
             } finally {
                 # CRÍTICO: Limpiar archivo temporal SIEMPRE
@@ -189,7 +197,7 @@ foreach ($email in $userList) {
             foreach ($excl in $excludedList) {
                 if ($directoryParts -contains $excl) {
                     $isExcluded = $true
-                    $logLine = "$((Get-Date).ToString('o'));$email;Scan;$sourceRelUrl;SKIPPED;System folder excluded ($excl)"
+                    $logLine = "$((Get-Date).ToString('o'));$email;Scan;$sourceRelUrl;;SKIPPED;System folder excluded ($excl)"
                     Add-Content -Path $reportFile -Value $logLine
                     break
                 }
@@ -203,7 +211,7 @@ foreach ($email in $userList) {
                 $destModified   = $destCache[$expectedDestPath]
                 # Tolerancia de 20 segundos para evitar falsos positivos por zona horaria o precisión
                 if (($sourceModified - $destModified).TotalSeconds -le 20) {
-                    $logLine = "$((Get-Date).ToString('o'));$email;Migrate;$sourceRelUrl;SKIPPED;File exists and source is not newer (delta: $([math]::Round(($sourceModified - $destModified).TotalSeconds,1))s)"
+                    $logLine = "$((Get-Date).ToString('o'));$email;Migrate;$sourceRelUrl;;SKIPPED;File exists and source is not newer (delta: $([math]::Round(($sourceModified - $destModified).TotalSeconds,1))s)"
                     Add-Content -Path $reportFile -Value $logLine
                     continue
                 }
@@ -342,7 +350,7 @@ foreach ($email in $userList) {
 
             # Guardar resultados del lote
             foreach ($res in $results) {
-                $logLine = "$((Get-Date).ToString('o'));$($res.User);Migrate;$($res.Item);$($res.Status);$($res.Message)"
+                $logLine = "$((Get-Date).ToString('o'));$($res.User);Migrate;$($res.Item);$($res.DestPath);$($res.Status);$($res.Message)"
                 Add-Content -Path $reportFile -Value $logLine
 
                 $processedFiles++
@@ -381,12 +389,12 @@ foreach ($email in $userList) {
 
         # Escribir resumen al final del reporte CSV
         Add-Content -Path $reportFile -Value ""
-        Add-Content -Path $reportFile -Value ";;RESUMEN DE MIGRACIÓN - $email;;;"
-        Add-Content -Path $reportFile -Value "Archivos procesados;$processedFiles;;;;"
-        Add-Content -Path $reportFile -Value "Exitosos;$successCount;;;;"
-        Add-Content -Path $reportFile -Value "Errores;$errorCount;;;;"
-        Add-Content -Path $reportFile -Value "Tiempo total;$($totalTime.Hours)h $($totalTime.Minutes)m $($totalTime.Seconds)s;;;;"
-        Add-Content -Path $reportFile -Value "Velocidad promedio;$avgRate archivos/min;;;;"
+        Add-Content -Path $reportFile -Value ";;;RESUMEN DE MIGRACIÓN - $email;;;"
+        Add-Content -Path $reportFile -Value "Archivos procesados;$processedFiles;;;;;"
+        Add-Content -Path $reportFile -Value "Exitosos;$successCount;;;;;"
+        Add-Content -Path $reportFile -Value "Errores;$errorCount;;;;;"
+        Add-Content -Path $reportFile -Value "Tiempo total;$($totalTime.Hours)h $($totalTime.Minutes)m $($totalTime.Seconds)s;;;;;"
+        Add-Content -Path $reportFile -Value "Velocidad promedio;$avgRate archivos/min;;;;;"
 
     } catch {
         Write-Host "  [ERROR FATAL] $email : $($_.Exception.Message)" -ForegroundColor Red
