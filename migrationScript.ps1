@@ -38,7 +38,7 @@ $firstUserName = $firstUser.Split('@')[0]
 $reportFile = Join-Path $logPath "migration-report-v4-$firstUserName-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
 
 if (-not (Test-Path $logPath)) { New-Item -ItemType Directory -Path $logPath | Out-Null }
-"Timestamp,User,Step,Item,Status,Message" | Out-File $reportFile -Encoding UTF8
+"Timestamp;User;Step;Item;Status;Message" | Out-File $reportFile -Encoding UTF8
 
 # Convertir variables del .env a Arrays
 # IMPORTANTE: usar @() para forzar array y evitar problemas de indexación
@@ -187,7 +187,7 @@ foreach ($email in $userList) {
             foreach ($excl in $excludedList) {
                 if ($directoryParts -contains $excl) {
                     $isExcluded = $true
-                    $logLine = "$((Get-Date).ToString('o')),$email,Scan,$sourceRelUrl,SKIPPED,System folder excluded ($excl)"
+                    $logLine = "$((Get-Date).ToString('o'));$email;Scan;$sourceRelUrl;SKIPPED;System folder excluded ($excl)"
                     Add-Content -Path $reportFile -Value $logLine
                     break
                 }
@@ -197,7 +197,7 @@ foreach ($email in $userList) {
             # FILTRO 3: Archivos Existentes
             $expectedDestPath = $sourceRelUrl -replace [regex]::Escape($baseDocUrl), $destBaseUrl
             if ($SkipExisting -and $destCache.ContainsKey($expectedDestPath)) {
-                $logLine = "$((Get-Date).ToString('o')),$email,Migrate,$sourceRelUrl,SKIPPED,File exists in destination"
+                $logLine = "$((Get-Date).ToString('o'));$email;Migrate;$sourceRelUrl;SKIPPED;File exists in destination"
                 Add-Content -Path $reportFile -Value $logLine
                 continue
             }
@@ -334,7 +334,7 @@ foreach ($email in $userList) {
 
             # Guardar resultados del lote
             foreach ($res in $results) {
-                $logLine = "$((Get-Date).ToString('o')),$($res.User),Migrate,$($res.Item),$($res.Status),$($res.Message)"
+                $logLine = "$((Get-Date).ToString('o'));$($res.User);Migrate;$($res.Item);$($res.Status);$($res.Message)"
                 Add-Content -Path $reportFile -Value $logLine
 
                 $processedFiles++
