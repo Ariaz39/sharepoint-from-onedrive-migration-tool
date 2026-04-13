@@ -72,7 +72,7 @@ try {
     $sourceConn = Connect-PnPOnline -Url $oneDriveUrl -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection
 
     Write-Host "  Escaneando archivos (puede tardar si hay muchos archivos)..." -ForegroundColor DarkGray
-    $sourceFiles = Get-PnPListItem -List "Documents" -PageSize 5000 -Connection $sourceConn | Where-Object { $_.FileSystemObjectType -eq "File" }
+    $sourceFiles = Get-PnPListItem -List "Documents" -PageSize 1000 -Connection $sourceConn | Where-Object { $_.FileSystemObjectType -eq "File" }
     Write-Host "  Archivos encontrados: $($sourceFiles.Count)" -ForegroundColor Cyan
 
     # Separar archivos: excluidos vs a migrar
@@ -153,7 +153,7 @@ try {
     $destConn = Connect-PnPOnline -Url $DESTINATION_SITE_URL -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection
 
     Write-Host "  Escaneando archivos (puede tardar si hay muchos archivos)..." -ForegroundColor DarkGray
-    $destFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize 5000 -Connection $destConn | Where-Object { $_.FileSystemObjectType -eq "File" }
+    $destFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize 1000 -Connection $destConn | Where-Object { $_.FileSystemObjectType -eq "File" }
     Write-Host "  Archivos encontrados: $($destFiles.Count)" -ForegroundColor Cyan
 
     $totalSizeBytesDestino = 0
