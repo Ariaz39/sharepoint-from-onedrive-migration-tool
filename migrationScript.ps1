@@ -1,19 +1,19 @@
 # ==============================================================================
-# SCRIPT DE MIGRACIÓN ONEDRIVE A SHAREPOINT - VERSIÓN OPTIMIZADA (V4)
+# SCRIPT DE MIGRACIÓN ONEDRIVE A SHAREPOINT - VERSIÓN OPTIMIZADA (V5)
 #
 # Autor: Alejandro Ariaz (@Ariaz39)
 # Licencia: MIT License
 # Repositorio: https://github.com/Ariaz39/sharepoint-from-onedrive-migration-tool
 #
 # Requiere: PowerShell 7+ y PnP.PowerShell
-# Novedades V4: Paralelismo aumentado (25 hilos), lotes 1000, paginación configurable
-# Optimizado para: 1 millón de archivos (versión conservadora)
+# Novedades V5: Escaneo paginado en streaming, checkpoint por archivo (reanudable),
+#               pausa entre lotes configurable, apto para migraciones de 100GB+
 # ==============================================================================
 
 param (
     [switch]$Force,
     [switch]$SkipExisting,
-    [string]$ScopeFolder = ""  # Ej: -ScopeFolder "Proyectos/2026"
+    [string]$ScopeFolder = ""  # Ej: -ScopeFolder "Proyectos/2026" o múltiples: -ScopeFolder "Carpeta1,Carpeta2"
 )
 
 # 1. Cargar Variables de Entorno
@@ -46,16 +46,19 @@ $userList = @($USERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { 
 $excludedList = @($EXCLUDED_FOLDERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
 
 # Variables de Control de Rendimiento (leídas desde .env)
-$throttleLimit = [int]$THROTTLE_LIMIT
-$batchSize = [int]$BATCH_SIZE
-$maxRetries = [int]$MAX_RETRIES
-$pageSize = [int]$PAGE_SIZE
+$throttleLimit  = [int]$THROTTLE_LIMIT
+$batchSize      = [int]$BATCH_SIZE
+$maxRetries     = [int]$MAX_RETRIES
+$pageSize       = [int]$PAGE_SIZE
+$batchPauseSec  = if ($BATCH_PAUSE_SECONDS) { [int]$BATCH_PAUSE_SECONDS } else { 0 }
 
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "MIGRACIÓN ONEDRIVE → SHAREPOINT V4" -ForegroundColor Cyan
+Write-Host "MIGRACIÓN ONEDRIVE → SHAREPOINT V5" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "ThrottleLimit: $throttleLimit | BatchSize: $batchSize | PageSize: $pageSize" -ForegroundColor DarkGray
-if ($ScopeFolder) { Write-Host "[SCOPE ACTIVADO] Solo se migrará: $ScopeFolder" -ForegroundColor Yellow }
+Write-Host "ThrottleLimit: $throttleLimit | BatchSize: $batchSize | PageSize: $pageSize | PauseLote: ${batchPauseSec}s" -ForegroundColor DarkGray
+# Convertir ScopeFolder en array (soporta múltiples carpetas separadas por coma)
+$scopeFolderList = @($ScopeFolder -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+if ($scopeFolderList.Count -gt 0) { Write-Host "[SCOPE ACTIVADO] Solo se migrará: $($scopeFolderList -join ' | ')" -ForegroundColor Yellow }
 Write-Host ""
 
 # 2. Función de Sanitización de Nombres
@@ -75,7 +78,7 @@ function Transfer-File {
     param(
         $SourceUrl, $DestSiteUrl,
         $DestFolderPath, $FileName, $UserEmail,
-        $CertPath, $CertPassword, $TenantId, $ClientId,
+        $CertPath, $CertPasswordPlain, $TenantId, $ClientId,
         $MaxRetries, $RetryDelay429, $RetryDelayDefault
     )
 
@@ -86,6 +89,8 @@ function Transfer-File {
     $destConn = $null
 
     try {
+        # Convertir contraseña a SecureString dentro del hilo (evita corrupción de SecureString entre runspaces)
+        $CertPassword = ConvertTo-SecureString -String $CertPasswordPlain -AsPlainText -Force
         # Crear conexiones (una por archivo, evita problemas de thread-safety)
         $sourceConn = Connect-PnPOnline -Url $SourceUrl -ClientId $ClientId -Tenant $TenantId -CertificatePath $CertPath -CertificatePassword $CertPassword -ReturnConnection -ErrorAction Stop
         $destConn = Connect-PnPOnline -Url $DestSiteUrl -ClientId $ClientId -Tenant $TenantId -CertificatePath $CertPath -CertificatePassword $CertPassword -ReturnConnection -ErrorAction Stop
@@ -151,7 +156,7 @@ function Transfer-File {
 foreach ($email in $userList) {
     Write-Host "`nProcesando usuario: $email" -ForegroundColor Yellow
     
-    $upnPrefix = $email.Replace(".", "_").Replace("@", "_")
+    $upnPrefix = $email.ToLower().Replace(".", "_").Replace("@", "_")
     $myUrlBase = $MY_URL -replace '/personal$', ''
     $oneDriveUrl = "$myUrlBase/personal/$upnPrefix"
     $baseDocUrl = "/personal/$upnPrefix/Documents"
@@ -161,241 +166,257 @@ foreach ($email in $userList) {
     $destBaseUrl = "/sites/$destSiteName/$DESTINATION_LIBRARY"  # Para comparación/logging
     $destLibraryRelative = $DESTINATION_LIBRARY  # Ruta relativa a la biblioteca (para operaciones PnP)
 
+    # Archivo de checkpoint: registra archivos ya migrados exitosamente para permitir reanudar
+    $checkpointFile = Join-Path $logPath "checkpoint-$firstUserName.json"
+    $checkpoint = @{}
+    if (Test-Path $checkpointFile) {
+        Write-Host "  [CHECKPOINT] Cargando progreso previo desde $checkpointFile..." -ForegroundColor Yellow
+        $checkpoint = Get-Content $checkpointFile -Raw | ConvertFrom-Json -AsHashtable
+        Write-Host "  [CHECKPOINT] $($checkpoint.Count) archivos ya migrados, se saltarán." -ForegroundColor Yellow
+    }
+
     try {
         Write-Host "  Conectando a SharePoint..." -ForegroundColor DarkGray
         $sourceConn = Connect-PnPOnline -Url $oneDriveUrl -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection -ErrorAction Stop
-        $destConn = Connect-PnPOnline -Url $DESTINATION_SITE_URL -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection -ErrorAction Stop
-        
-        Write-Host "  Escaneando archivos..." -ForegroundColor DarkGray
-        $allSourceFiles = Get-PnPListItem -List "Documents" -PageSize $pageSize -Connection $sourceConn | Where-Object { $_.FileSystemObjectType -eq "File" }
-
-        # Caché de destino
-        $destCache = @{}
-        if ($SkipExisting) {
-            Write-Host "  Verificando archivos existentes..." -ForegroundColor DarkGray
-            $allDestFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize $pageSize -Connection $destConn | Where-Object { $_.FileSystemObjectType -eq "File" }
-            foreach ($df in $allDestFiles) { $destCache[$df.FieldValues.FileRef] = $df.FieldValues.Modified }
-        }
-
-        # Aplicar Filtros: Scope y Exclusiones
-        $filesToProcess = @()
-        foreach ($file in $allSourceFiles) {
-            $sourceRelUrl = $file.FieldValues.FileRef
-            
-            # FILTRO 1: Scope de Carpeta
-            if ($ScopeFolder -ne "") {
-                $scopePath = "$baseDocUrl/$ScopeFolder"
-                # Si la ruta del archivo no empieza con la ruta del scope, lo saltamos
-                if (-not $sourceRelUrl.StartsWith($scopePath, [System.StringComparison]::InvariantCultureIgnoreCase)) {
-                    continue
-                }
-            }
-
-            # FILTRO 2: Carpetas Excluidas
-            $isExcluded = $false
-            # Extraer solo los nombres de las carpetas de la ruta del archivo
-            $pathParts = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
-            $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
-            
-            foreach ($excl in $excludedList) {
-                if ($directoryParts -contains $excl) {
-                    $isExcluded = $true
-                    $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Scan;$sourceRelUrl;;SKIPPED;Carpeta Excluida por configuracion ($excl)"
-                    Add-Content -Path $reportFile -Value $logLine
-                    break
-                }
-            }
-            if ($isExcluded) { continue }
-            
-            # FILTRO 3: Archivos Existentes (comparación por fecha de modificación)
-            $expectedDestPath = $sourceRelUrl -replace [regex]::Escape($baseDocUrl), $destBaseUrl
-            if ($SkipExisting -and $destCache.ContainsKey($expectedDestPath)) {
-                $sourceModified = $file.FieldValues.Modified
-                $destModified   = $destCache[$expectedDestPath]
-                # Tolerancia de 20 segundos para evitar falsos positivos por zona horaria o precisión
-                if (($sourceModified - $destModified).TotalSeconds -le 20) {
-                    $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Migrate;$sourceRelUrl;;SKIPPED;File exists and source is not newer (delta: $([math]::Round(($sourceModified - $destModified).TotalSeconds,1))s)"
-                    Add-Content -Path $reportFile -Value $logLine
-                    continue
-                }
-                # Source es más nuevo → sobreescribir (no hacer continue, cae al bloque de migración)
-            }
-
-            # Construir ruta RELATIVA a la biblioteca (sin /sites/.../library)
-            # Sanitizar cada segmento de carpeta individualmente
-            $relativePathFromDocs = $sourceRelUrl -replace [regex]::Escape($baseDocUrl), ""
-            $relativePathFromDocs = $relativePathFromDocs.TrimStart('/')
-            $destFolderRelative = if ($relativePathFromDocs.Contains('/')) {
-                $folderSegments = $relativePathFromDocs.Substring(0, $relativePathFromDocs.LastIndexOf('/')).Split('/') | ForEach-Object { Format-SafeName -Name $_ }
-                $destLibraryRelative + "/" + ($folderSegments -join '/')
-            } else {
-                $destLibraryRelative
-            }
-
-            $filesToProcess += [PSCustomObject]@{
-                SourceUrl = $oneDriveUrl
-                SourceFileRef = $sourceRelUrl
-                DestFolder = $destFolderRelative  # Ahora es relativo a la biblioteca
-                User = $email
-            }
-        }
-
-        $totalFiles = $filesToProcess.Count
-        Write-Host "  Archivos a migrar tras aplicar filtros: $totalFiles" -ForegroundColor Cyan
-
-        # CRÍTICO: Pre-crear todas las carpetas de destino (OPTIMIZADO con caché)
-        $uniqueFolders = $filesToProcess | Select-Object -ExpandProperty DestFolder -Unique | Sort-Object
-        Write-Host "  Creando estructura de carpetas ($($uniqueFolders.Count) rutas únicas)..." -ForegroundColor DarkGray
-
-        # Caché de carpetas ya creadas (evita verificar/crear la misma carpeta múltiples veces)
-        $createdFolders = @{}
-        $folderCount = 0
-        $startTime = Get-Date
-
-        foreach ($folder in $uniqueFolders) {
-            try {
-                # Mostrar progreso cada 50 carpetas
-                $folderCount++
-                if ($folderCount % 50 -eq 0) {
-                    $elapsed = ((Get-Date) - $startTime).TotalSeconds
-                    $rate = $folderCount / $elapsed
-                    $remaining = ($uniqueFolders.Count - $folderCount) / $rate
-                    Write-Host "    Progreso: $folderCount/$($uniqueFolders.Count) carpetas (${remaining}s restantes aprox.)" -ForegroundColor DarkGray
-                }
-
-                # Crear carpeta recursivamente parte por parte
-                $parts = $folder.Trim('/').Split('/')
-                $pathParts = @()
-
-                foreach ($part in $parts) {
-                    if ($part) {
-                        $pathParts += $part
-                        $currentPath = $pathParts -join '/'
-
-                        # OPTIMIZACIÓN: Skip si ya creamos esta carpeta en esta sesión
-                        if ($createdFolders.ContainsKey($currentPath)) {
-                            continue
-                        }
-
-                        try {
-                            # Intentar crear directamente (más rápido que verificar primero)
-                            $parentPath = if ($pathParts.Count -gt 1) {
-                                $pathParts[0..($pathParts.Count - 2)] -join '/'
-                            } else {
-                                ""
-                            }
-                            Add-PnPFolder -Name $part -Folder $parentPath -Connection $destConn -ErrorAction Stop | Out-Null
-                            $createdFolders[$currentPath] = $true
-                        } catch {
-                            # Si falla (probablemente ya existe), marcarlo como creado de todos modos
-                            $createdFolders[$currentPath] = $true
-                        }
-                    }
-                }
-            } catch {
-                # Ignorar errores generales
-            }
-        }
-
-        $totalTime = ((Get-Date) - $startTime).TotalSeconds
-        Write-Host "  ✓ Estructura de carpetas creada ($folderCount rutas en ${totalTime}s)" -ForegroundColor Green
+        $destConn   = Connect-PnPOnline -Url $DESTINATION_SITE_URL -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection -ErrorAction Stop
 
         # Obtener definición de funciones para uso paralelo
-        $transferFunctionDef = ${function:Transfer-File}.ToString()
-        $formatSafeNameDef = ${function:Format-SafeName}.ToString()
+        $transferFunctionDef  = ${function:Transfer-File}.ToString()
+        $formatSafeNameDef    = ${function:Format-SafeName}.ToString()
 
-        # 4. Procesamiento en Lotes y Paralelo (Evita el colapso de RAM)
+        # Caché de carpetas ya creadas en destino (compartida entre scopes)
+        $createdFolders = @{}
+
         $migrationStartTime = Get-Date
-        $processedFiles = 0
-        $successCount = 0
-        $errorCount = 0
+        $processedFiles     = 0
+        $successCount       = 0
+        $errorCount         = 0
+        $skippedCount       = 0
+        $currentBatchNum    = 0
 
-        for ($i = 0; $i -lt $totalFiles; $i += $batchSize) {
-            $batch = $filesToProcess | Select-Object -Skip $i -First $batchSize
-            $currentBatch = [math]::Floor($i/$batchSize) + 1
-            $totalBatches = [math]::Ceiling($totalFiles/$batchSize)
-
-            # Calcular progreso y ETA
-            $percentComplete = [math]::Round(($processedFiles / $totalFiles) * 100, 1)
-            $elapsed = (Get-Date) - $migrationStartTime
-            $rate = if ($processedFiles -gt 0 -and $elapsed.TotalSeconds -gt 0) { $processedFiles / $elapsed.TotalMinutes } else { 0 }
-            $remaining = if ($rate -gt 0) { ($totalFiles - $processedFiles) / $rate } else { 0 }
-
-            # Mostrar barra de progreso
-            $progressParams = @{
-                Activity = "Migrando archivos de $email"
-                Status = "Lote $currentBatch de $totalBatches | $processedFiles/$totalFiles archivos | ✓ $successCount ✗ $errorCount"
-                PercentComplete = $percentComplete
-                CurrentOperation = if ($rate -gt 0) { "Velocidad: $([math]::Round($rate, 1)) archivos/min | ETA: $([math]::Round($remaining, 1)) min" } else { "Calculando velocidad..." }
-            }
-            Write-Progress @progressParams
-
-            Write-Host "  -> Lote $currentBatch/$totalBatches ($($batch.Count) archivos) | Progreso: $percentComplete% | ✓ $successCount ✗ $errorCount" -ForegroundColor DarkGray
-
-            $results = $batch | ForEach-Object -Parallel {
-                # Recrear funciones en el contexto paralelo
-                ${function:Format-SafeName} = $using:formatSafeNameDef
-                ${function:Transfer-File} = $using:transferFunctionDef
-
-                Transfer-File -SourceUrl $_.SourceUrl `
-                              -DestSiteUrl $using:DESTINATION_SITE_URL `
-                              -DestFolderPath $_.DestFolder `
-                              -FileName $_.SourceFileRef `
-                              -UserEmail $_.User `
-                              -CertPath $using:certPath `
-                              -CertPassword $using:certPassword `
-                              -TenantId $using:TENANT `
-                              -ClientId $using:CLIENT_ID `
-                              -MaxRetries $using:maxRetries `
-                              -RetryDelay429 ([int]$using:RETRY_DELAY_429) `
-                              -RetryDelayDefault ([int]$using:RETRY_DELAY_DEFAULT)
-            } -ThrottleLimit $throttleLimit
-
-            # Guardar resultados del lote
-            foreach ($res in $results) {
-                $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Migrate;$($res.Item);$($res.DestPath);$($res.Status);$($res.Message)"
-                Add-Content -Path $reportFile -Value $logLine
-
-                $processedFiles++
-                if ($res.Status -eq "ERROR") {
-                    $errorCount++
-                    Write-Host "    [ERROR] $($res.Item)" -ForegroundColor Red
-                } else {
-                    $successCount++
-                }
-            }
-
-            # LIMPIEZA DE MEMORIA RAM (Garbage Collection)
-            $batch = $null
-            $results = $null
-            [System.GC]::Collect()
-            [System.GC]::WaitForPendingFinalizers()
+        # Determinar qué carpetas escanear (scope o raíz completa)
+        $scanFolders = if ($scopeFolderList.Count -gt 0) {
+            $scopeFolderList | ForEach-Object { "$baseDocUrl/$_" }
+        } else {
+            @($baseDocUrl)
         }
 
-        # Completar barra de progreso
-        Write-Progress -Activity "Migrando archivos de $email" -Completed
+        # Expande el árbol de carpetas nivel por nivel usando el objeto Folder de PnP
+        # Retorna lista plana de ServerRelativeUrl de todas las subcarpetas
+        function Get-AllSubFolders {
+            param([string]$FolderServerRelUrl, $Conn)
+            $queue  = [System.Collections.Generic.Queue[string]]::new()
+            $result = [System.Collections.Generic.List[string]]::new()
+            $queue.Enqueue($FolderServerRelUrl)
+            while ($queue.Count -gt 0) {
+                $current = $queue.Dequeue()
+                $result.Add($current)
+                try {
+                    # Obtener el objeto Folder por su ServerRelativeUrl completa
+                    $folder = Get-PnPFolder -Url $current -Connection $Conn -ErrorAction Stop
+                    $folder.Context.Load($folder.Folders)
+                    $folder.Context.ExecuteQuery()
+                    foreach ($sf in $folder.Folders) {
+                        # Ignorar carpetas de sistema de SharePoint
+                        if ($sf.Name -notin @('Forms', '_vti_cnf')) {
+                            $queue.Enqueue($sf.ServerRelativeUrl)
+                        }
+                    }
+                } catch { <# ignorar errores de permiso en subcarpetas individuales #> }
+            }
+            return ,$result
+        }
+
+        foreach ($scanFolder in $scanFolders) {
+            Write-Host "  Expandiendo árbol de carpetas: $scanFolder" -ForegroundColor DarkGray
+            $allSubFolders = Get-AllSubFolders -FolderServerRelUrl $scanFolder -Conn $sourceConn
+            Write-Host "  -> $($allSubFolders.Count) carpetas encontradas (incluyendo raíz)" -ForegroundColor DarkGray
+
+            foreach ($subFolder in $allSubFolders) {
+                Write-Host "  Escaneando: $subFolder" -ForegroundColor DarkGray
+
+                # Escaneo PAGINADO con CAML FilesOnly: solo archivos directos de esta carpeta,
+                # sin recursión → nunca supera el threshold de 5000 por consulta
+                $pageNumber = 0
+                $position   = $null
+                # CAML Query con Scope FilesOnly: devuelve solo ítems de tipo File en la carpeta actual
+                $camlQuery  = "<View Scope='FilesOnly'><RowLimit Paged='TRUE'>$pageSize</RowLimit></View>"
+
+                do {
+                    $pageNumber++
+                    try {
+                        $pageArgs = @{
+                            List                    = "Documents"
+                            Query                   = $camlQuery
+                            Connection              = $sourceConn
+                            FolderServerRelativeUrl = $subFolder
+                            PageSize                = $pageSize
+                            ErrorAction             = "Stop"
+                        }
+                        if ($position) { $pageArgs["ListItemCollectionPosition"] = $position }
+
+                        $page     = Get-PnPListItem @pageArgs
+                        $position = $page.ListItemCollectionPosition
+
+                        $pageFiles = @($page | Where-Object { $_.FileSystemObjectType -eq "File" })
+                        if ($pageFiles.Count -gt 0) {
+                            Write-Host "    Pág $pageNumber`: $($pageFiles.Count) archivos" -ForegroundColor DarkGray
+                        }
+
+                        # Construir lote desde esta página y procesarlo
+                        $batchItems = [System.Collections.Generic.List[object]]::new()
+
+                        foreach ($file in $pageFiles) {
+                            $sourceRelUrl = $file.FieldValues.FileRef
+
+                            # FILTRO: Checkpoint (ya migrado exitosamente)
+                            if ($checkpoint.ContainsKey($sourceRelUrl)) {
+                                $skippedCount++
+                                continue
+                            }
+
+                            # FILTRO: Carpetas Excluidas
+                            $pathParts      = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
+                            $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
+                            $isExcluded     = $false
+                            foreach ($excl in $excludedList) {
+                                if ($directoryParts -contains $excl) {
+                                    $isExcluded = $true
+                                    $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Scan;$sourceRelUrl;;SKIPPED;Carpeta Excluida ($excl)"
+                                    Add-Content -Path $reportFile -Value $logLine
+                                    break
+                                }
+                            }
+                            if ($isExcluded) { $skippedCount++; continue }
+
+                            # Construir ruta de destino sanitizada
+                            $relativePathFromDocs = $sourceRelUrl -replace [regex]::Escape($baseDocUrl), ""
+                            $relativePathFromDocs = $relativePathFromDocs.TrimStart('/')
+                            $destFolderRelative   = if ($relativePathFromDocs.Contains('/')) {
+                                $folderSegments = $relativePathFromDocs.Substring(0, $relativePathFromDocs.LastIndexOf('/')).Split('/') |
+                                    ForEach-Object { Format-SafeName -Name $_ }
+                                $destLibraryRelative + "/" + ($folderSegments -join '/')
+                            } else {
+                                $destLibraryRelative
+                            }
+
+                            # Pre-crear carpeta de destino si no existe aún
+                            if (-not $createdFolders.ContainsKey($destFolderRelative)) {
+                                $parts     = $destFolderRelative.Trim('/').Split('/')
+                                $pathBuild = @()
+                                foreach ($part in $parts) {
+                                    if ($part) {
+                                        $pathBuild += $part
+                                        $currentPath = $pathBuild -join '/'
+                                        if (-not $createdFolders.ContainsKey($currentPath)) {
+                                            $parentPath = if ($pathBuild.Count -gt 1) { $pathBuild[0..($pathBuild.Count - 2)] -join '/' } else { "" }
+                                            try { Add-PnPFolder -Name $part -Folder $parentPath -Connection $destConn -ErrorAction Stop | Out-Null } catch {}
+                                            $createdFolders[$currentPath] = $true
+                                        }
+                                    }
+                                }
+                            }
+
+                            $batchItems.Add([PSCustomObject]@{
+                                SourceUrl     = $oneDriveUrl
+                                SourceFileRef = $sourceRelUrl
+                                DestFolder    = $destFolderRelative
+                                User          = $email
+                            })
+                        }
+
+                        # Procesar batchItems en sub-lotes paralelos del tamaño configurado
+                        $allItems = @($batchItems)
+                        for ($i = 0; $i -lt $allItems.Count; $i += $batchSize) {
+                            $subBatch = $allItems | Select-Object -Skip $i -First $batchSize
+                            if (-not $subBatch) { continue }
+
+                            $currentBatchNum++
+                            $elapsed = (Get-Date) - $migrationStartTime
+                            $rate    = if ($processedFiles -gt 0 -and $elapsed.TotalSeconds -gt 0) { $processedFiles / $elapsed.TotalMinutes } else { 0 }
+
+                            Write-Host "  -> Lote $currentBatchNum ($($subBatch.Count) arch) | ✓ $successCount ✗ $errorCount ⏭ $skippedCount | $(if ($rate -gt 0) { "$([math]::Round($rate,1)) arch/min" } else { '...' })" -ForegroundColor DarkGray
+
+                            $results = $subBatch | ForEach-Object -Parallel {
+                                ${function:Format-SafeName} = $using:formatSafeNameDef
+                                ${function:Transfer-File}   = $using:transferFunctionDef
+
+                                Transfer-File -SourceUrl          $_.SourceUrl `
+                                              -DestSiteUrl        $using:DESTINATION_SITE_URL `
+                                              -DestFolderPath     $_.DestFolder `
+                                              -FileName           $_.SourceFileRef `
+                                              -UserEmail          $_.User `
+                                              -CertPath           $using:certPath `
+                                              -CertPasswordPlain  $using:CERT_PASSWORD `
+                                              -TenantId           $using:TENANT `
+                                              -ClientId           $using:CLIENT_ID `
+                                              -MaxRetries         $using:maxRetries `
+                                              -RetryDelay429      ([int]$using:RETRY_DELAY_429) `
+                                              -RetryDelayDefault  ([int]$using:RETRY_DELAY_DEFAULT)
+                            } -ThrottleLimit $throttleLimit
+
+                            # Guardar resultados y actualizar checkpoint
+                            foreach ($res in $results) {
+                                $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Migrate;$($res.Item);$($res.DestPath);$($res.Status);$($res.Message)"
+                                Add-Content -Path $reportFile -Value $logLine
+                                $processedFiles++
+                                if ($res.Status -eq "ERROR") {
+                                    $errorCount++
+                                    Write-Host "    [ERROR] $($res.Item)" -ForegroundColor Red
+                                } else {
+                                    $successCount++
+                                    $checkpoint[$res.Item] = (Get-Date).ToString('o')
+                                }
+                            }
+
+                            # Persistir checkpoint en disco tras cada sub-lote
+                            $checkpoint | ConvertTo-Json -Compress | Set-Content $checkpointFile -Encoding UTF8
+
+                            # Pausa entre lotes para evitar throttling sostenido en migraciones grandes
+                            if ($batchPauseSec -gt 0) {
+                                Write-Host "    Pausa: ${batchPauseSec}s..." -ForegroundColor DarkGray
+                                Start-Sleep -Seconds $batchPauseSec
+                            }
+
+                            # Liberar RAM
+                            $subBatch = $null
+                            $results  = $null
+                            [System.GC]::Collect()
+                            [System.GC]::WaitForPendingFinalizers()
+                        }
+
+                    } catch {
+                        Write-Host "  [WARN] Error en página $pageNumber de '$subFolder': $($_.Exception.Message)" -ForegroundColor Yellow
+                        $position = $null  # Detener paginación de esta carpeta si falla
+                    }
+
+                } while ($position)  # Continuar mientras haya más páginas de esta subcarpeta
+            }  # fin foreach ($subFolder)
+        }  # fin foreach ($scanFolder)
 
         # Resumen de migración
         $totalTime = (Get-Date) - $migrationStartTime
-        $avgRate = if ($totalTime.TotalMinutes -gt 0) { [math]::Round($processedFiles / $totalTime.TotalMinutes, 1) } else { 0 }
+        $avgRate   = if ($totalTime.TotalMinutes -gt 0) { [math]::Round($processedFiles / $totalTime.TotalMinutes, 1) } else { 0 }
 
         Write-Host ""
         Write-Host "  ========================================" -ForegroundColor Cyan
         Write-Host "  RESUMEN DE MIGRACIÓN - $email" -ForegroundColor Cyan
         Write-Host "  ========================================" -ForegroundColor Cyan
         Write-Host "  Archivos procesados: $processedFiles" -ForegroundColor White
-        Write-Host "  Exitosos: $successCount" -ForegroundColor Green
-        Write-Host "  Errores: $errorCount" -ForegroundColor $(if ($errorCount -gt 0) { 'Red' } else { 'Green' })
-        Write-Host "  Tiempo total: $($totalTime.Hours)h $($totalTime.Minutes)m $($totalTime.Seconds)s" -ForegroundColor White
-        Write-Host "  Velocidad promedio: $avgRate archivos/min" -ForegroundColor White
+        Write-Host "  Exitosos:            $successCount"   -ForegroundColor Green
+        Write-Host "  Errores:             $errorCount"     -ForegroundColor $(if ($errorCount -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  Saltados (checkpoint/excluidos): $skippedCount" -ForegroundColor DarkGray
+        Write-Host "  Tiempo total:        $($totalTime.Hours)h $($totalTime.Minutes)m $($totalTime.Seconds)s" -ForegroundColor White
+        Write-Host "  Velocidad promedio:  $avgRate archivos/min" -ForegroundColor White
+        Write-Host "  Checkpoint guardado: $checkpointFile" -ForegroundColor DarkGray
         Write-Host "  ========================================" -ForegroundColor Cyan
 
-        # Escribir resumen al final del reporte CSV
         Add-Content -Path $reportFile -Value ""
         Add-Content -Path $reportFile -Value ";;RESUMEN DE MIGRACIÓN - $email;;;"
         Add-Content -Path $reportFile -Value "Archivos procesados;$processedFiles;;;;"
         Add-Content -Path $reportFile -Value "Exitosos;$successCount;;;;"
         Add-Content -Path $reportFile -Value "Errores;$errorCount;;;;"
+        Add-Content -Path $reportFile -Value "Saltados;$skippedCount;;;;"
         Add-Content -Path $reportFile -Value "Tiempo total;$($totalTime.Hours)h $($totalTime.Minutes)m $($totalTime.Seconds)s;;;;"
         Add-Content -Path $reportFile -Value "Velocidad promedio;$avgRate archivos/min;;;;"
 
