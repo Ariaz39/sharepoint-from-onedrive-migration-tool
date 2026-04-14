@@ -43,7 +43,8 @@ if (-not (Test-Path $logPath)) { New-Item -ItemType Directory -Path $logPath | O
 # Convertir variables del .env a Arrays
 # IMPORTANTE: usar @() para forzar array y evitar problemas de indexación
 $userList = @($USERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
-$excludedList = @($EXCLUDED_FOLDERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+$excludedList      = @($EXCLUDED_FOLDERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+$excludedExtensions = @($EXCLUDED_EXTENSIONS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
 
 # Variables de Control de Rendimiento (leídas desde .env)
 $throttleLimit  = [int]$THROTTLE_LIMIT
@@ -283,6 +284,18 @@ foreach ($email in $userList) {
                                     Write-Host "    [ACTUALIZAR] $sourceRelUrl (modificado $([math]::Round(($sourceModified - $migratedAt).TotalMinutes,1)) min después de migrar)" -ForegroundColor Yellow
                                     # No hacer continue → cae al bloque de migración para sobreescribir
                                 } else {
+                                    $skippedCount++
+                                    continue
+                                }
+                            }
+
+                            # FILTRO: Extensiones excluidas (locks de ArcGIS, temporales, etc.)
+                            if ($excludedExtensions.Count -gt 0) {
+                                $fileName = $sourceRelUrl.Substring($sourceRelUrl.LastIndexOf('/') + 1)
+                                $isLockFile = $excludedExtensions | Where-Object { $fileName.EndsWith($_, [System.StringComparison]::InvariantCultureIgnoreCase) }
+                                if ($isLockFile) {
+                                    $logLine = "$((Get-Date).ToString('yyyy-MM-dd_HH:mm:ss'));Scan;$sourceRelUrl;;SKIPPED;Extensión excluida ($fileName)"
+                                    Add-Content -Path $reportFile -Value $logLine
                                     $skippedCount++
                                     continue
                                 }

@@ -50,7 +50,8 @@ if ([string]::IsNullOrWhiteSpace($UserEmail)) {
 }
 
 # Convertir EXCLUDED_FOLDERS a array
-$excludedList = $EXCLUDED_FOLDERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+$excludedList       = $EXCLUDED_FOLDERS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+$excludedExtensions = @($EXCLUDED_EXTENSIONS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
 
 $certPath = Join-Path $PSScriptRoot "PnPMigrationCert.pfx"
 $certPassword = ConvertTo-SecureString -String $CERT_PASSWORD -AsPlainText -Force
@@ -145,16 +146,22 @@ try {
             $pathParts      = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
             $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
 
-            $isExcluded = $false
-            foreach ($excl in $excludedList) {
-                if ($directoryParts -contains $excl) {
-                    $isExcluded = $true
-                    $excludedSizeBytes += $size
-                    $excludedFileCount++
-                    if (-not $excludedByFolder.ContainsKey($excl)) { $excludedByFolder[$excl] = @{ Count = 0; Size = 0 } }
-                    $excludedByFolder[$excl].Count++
-                    $excludedByFolder[$excl].Size += $size
-                    break
+            # Verificar extensión excluida
+            $fileName = $sourceRelUrl.Substring($sourceRelUrl.LastIndexOf('/') + 1)
+            $isLockFile = $excludedExtensions.Count -gt 0 -and ($excludedExtensions | Where-Object { $fileName.EndsWith($_, [System.StringComparison]::InvariantCultureIgnoreCase) })
+
+            $isExcluded = $isLockFile -as [bool]
+            if (-not $isExcluded) {
+                foreach ($excl in $excludedList) {
+                    if ($directoryParts -contains $excl) {
+                        $isExcluded = $true
+                        $excludedSizeBytes += $size
+                        $excludedFileCount++
+                        if (-not $excludedByFolder.ContainsKey($excl)) { $excludedByFolder[$excl] = @{ Count = 0; Size = 0 } }
+                        $excludedByFolder[$excl].Count++
+                        $excludedByFolder[$excl].Size += $size
+                        break
+                    }
                 }
             }
             if (-not $isExcluded) { $toMigrateSizeBytes += $size; $toMigrateFileCount++ }
