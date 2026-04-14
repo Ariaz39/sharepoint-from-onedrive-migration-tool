@@ -216,6 +216,9 @@ Write-Host ""
 Write-Host "=== COMPARACIÓN ===" -ForegroundColor Cyan
 Write-Host "  Archivos esperados (sin exclusiones): $toMigrateFileCount"
 Write-Host "  Archivos en SharePoint:               $fileCountDestino"
+Write-Host "  Tamaño origen  (bytes exactos): $toMigrateSizeBytes"
+Write-Host "  Tamaño destino (bytes exactos): $totalSizeBytesDestino"
+Write-Host "  Diferencia exacta: $diffBytes bytes ($([math]::Round([math]::Abs($diffBytes)/1MB,2)) MB)"
 Write-Host "  Porcentaje migrado: $percentMigrated%" -ForegroundColor $(if ($percentMigrated -ge 99) { 'Green' } elseif ($percentMigrated -ge 95) { 'Yellow' } else { 'Red' })
 Write-Host ""
 
@@ -225,6 +228,15 @@ if ([math]::Abs($diffFiles) -eq 0) {
     Write-Host "  ⚠ Archivos faltantes: $diffFiles" -ForegroundColor Yellow
 } else {
     Write-Host "  ℹ Archivos extra en destino: $([math]::Abs($diffFiles))" -ForegroundColor Cyan
+}
+
+Write-Host "  Diferencia de tamaño: $([math]::Round([math]::Abs($diffBytes)/1GB,2)) GB"
+if ([math]::Abs($diffBytes) -lt 100MB) {
+    Write-Host "  ✓ Tamaños coinciden (≤100 MB diferencia)" -ForegroundColor Green
+} elseif ($diffBytes -gt 0) {
+    Write-Host "  ⚠ Faltan $([math]::Round($diffBytes/1GB,2)) GB por migrar" -ForegroundColor Yellow
+} else {
+    Write-Host "  ℹ Destino tiene $([math]::Round([math]::Abs($diffBytes)/1GB,2)) GB extra" -ForegroundColor Cyan
 }
 
 Write-Host ""
@@ -240,28 +252,28 @@ if ($resultadoTexto -eq "EXITOSA") {
     Write-Host "  Se requiere investigar qué archivos no se migraron" -ForegroundColor Red
 }
 
-# GENERAR REPORTE CSV PARA GERENCIA
+# GENERAR COMPARATIVA CSV (formato limpio para gerencia, sin datos técnicos)
 $logPath    = Join-Path $PSScriptRoot ($LOG_DIRECTORY)
 if (-not (Test-Path $logPath)) { New-Item -ItemType Directory -Path $logPath | Out-Null }
-$scopeLabel = if ($ScopeFolder -ne "") { $ScopeFolder -replace '[/\\]', '-' } else { "completo" }
-$reportFile = Join-Path $logPath "reporte-migracion-$($UserEmail.Split('@')[0])-$scopeLabel-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
+$scopeLabel  = if ($ScopeFolder -ne "") { $ScopeFolder -replace '[/\\]', '-' } else { "full" }
+$compareFile = Join-Path $logPath "storage-comparison-$($UserEmail.Split('@')[0])-$scopeLabel-$((Get-Date).ToString('yyyyMMdd-HHmmss')).csv"
 
 $lines = @(
-    "REPORTE DE MIGRACIÓN"
-    "Fecha;$((Get-Date).ToString('dd/MM/yyyy HH:mm'))"
-    "Usuario;$UserEmail"
-    "Carpeta migrada;$(if ($ScopeFolder -ne '') { $ScopeFolder } else { 'Completo' })"
+    "STORAGE COMPARISON"
+    "Date;$((Get-Date).ToString('dd/MM/yyyy HH:mm'))"
+    "User;$UserEmail"
+    "Migrated folder;$(if ($ScopeFolder -ne '') { $ScopeFolder } else { 'Full' })"
     ""
-    "ORIGEN (OneDrive)"
-    "Total archivos origen;$toMigrateFileCount"
+    "SOURCE (OneDrive)"
+    "Total source files;$toMigrateFileCount"
     ""
-    "DESTINO (SharePoint)"
-    "Total archivos migrados;$fileCountDestino"
-    "Porcentaje completado;$percentMigrated%"
+    "DESTINATION (SharePoint)"
+    "Total migrated files;$fileCountDestino"
+    "Completion percentage;$percentMigrated%"
     ""
-    "RESULTADO;$resultadoTexto"
+    "RESULT;$resultadoTexto"
 )
-$lines | Out-File $reportFile -Encoding UTF8
+$lines | Out-File $compareFile -Encoding UTF8
 Write-Host ""
-Write-Host "  Reporte generado: $reportFile" -ForegroundColor DarkGray
+Write-Host "  Comparativa generada: $compareFile" -ForegroundColor DarkGray
 Write-Host ""
