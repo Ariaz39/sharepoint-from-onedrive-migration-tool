@@ -91,13 +91,17 @@ function Transfer-File {
     try {
         # Convertir contraseña a SecureString dentro del hilo (evita corrupción de SecureString entre runspaces)
         $CertPassword = ConvertTo-SecureString -String $CertPasswordPlain -AsPlainText -Force
-        # Crear conexiones (una por archivo, evita problemas de thread-safety)
-        $sourceConn = Connect-PnPOnline -Url $SourceUrl -ClientId $ClientId -Tenant $TenantId -CertificatePath $CertPath -CertificatePassword $CertPassword -ReturnConnection -ErrorAction Stop
-        $destConn = Connect-PnPOnline -Url $DestSiteUrl -ClientId $ClientId -Tenant $TenantId -CertificatePath $CertPath -CertificatePassword $CertPassword -ReturnConnection -ErrorAction Stop
 
         while (-not $success -and $retryCount -lt $MaxRetries) {
             $tempFile = $null
             try {
+                # Reconectar en cada intento: evita "Nullable object must have a value"
+                # que ocurre esporádicamente cuando el runspace no inicializa la conexión.
+                # Solo impacta hilos con fallo (no los exitosos), delay previo evita presión al API.
+                if ($retryCount -gt 0) { Start-Sleep -Seconds $RetryDelayDefault }
+                $sourceConn = Connect-PnPOnline -Url $SourceUrl -ClientId $ClientId -Tenant $TenantId -CertificatePath $CertPath -CertificatePassword $CertPassword -ReturnConnection -ErrorAction Stop
+                $destConn   = Connect-PnPOnline -Url $DestSiteUrl -ClientId $ClientId -Tenant $TenantId -CertificatePath $CertPath -CertificatePassword $CertPassword -ReturnConnection -ErrorAction Stop
+
                 # Extraer el nombre original del archivo y sanitizarlo
                 $rawFileName    = $FileName.Substring($FileName.LastIndexOf('/') + 1)
                 $safeFileName   = Format-SafeName -Name $rawFileName
