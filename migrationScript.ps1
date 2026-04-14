@@ -176,7 +176,7 @@ foreach ($email in $userList) {
     if (Test-Path $checkpointFile) {
         Write-Host "  [CHECKPOINT] Cargando progreso previo desde $checkpointFile..." -ForegroundColor Yellow
         $checkpoint = Get-Content $checkpointFile -Raw | ConvertFrom-Json -AsHashtable
-        Write-Host "  [CHECKPOINT] $($checkpoint.Count) archivos ya migrados, se saltarán." -ForegroundColor Yellow
+        Write-Host "  [CHECKPOINT] $($checkpoint.Count) archivos ya migrados (se saltarán si no tienen cambios mayores a 20 min)." -ForegroundColor Yellow
     }
 
     try {
