@@ -8,14 +8,17 @@
 # ==============================================================================
 #
 # USO:
-#   .\check-storage.ps1                              # Usa el primer usuario del .env
-#   .\check-storage.ps1 -UserEmail "user@domain.com" # Usa un usuario específico
+#   .\check-storage.ps1                                          # Usa el primer usuario del .env
+#   .\check-storage.ps1 -UserEmail "user@domain.com"             # Usa un usuario específico
+#   .\check-storage.ps1 -ScopeFolder "RUP"                       # Valida solo esa carpeta
+#   .\check-storage.ps1 -ScopeFolder "RUP/CONTRATOS FINALIZADOS" # Subcarpeta específica
 #
 # NOTA: No hardcodea información de la empresa - lee del .env
 # ==============================================================================
 
 param(
-    [string]$UserEmail = ""  # Opcional - si no se especifica, usa el primer usuario del .env
+    [string]$UserEmail   = "",  # Opcional - si no se especifica, usa el primer usuario del .env
+    [string]$ScopeFolder = ""   # Opcional - valida solo esa carpeta (igual que en migrationScript.ps1)
 )
 
 # Cargar configuración del .env (mismo método que migrationScript.ps1)
@@ -53,14 +56,21 @@ $certPath = Join-Path $PSScriptRoot "PnPMigrationCert.pfx"
 $certPassword = ConvertTo-SecureString -String $CERT_PASSWORD -AsPlainText -Force
 
 # Construir URLs
-$upnPrefix = $UserEmail.Replace(".", "_").Replace("@", "_")
+$upnPrefix = $UserEmail.ToLower().Replace(".", "_").Replace("@", "_")
 $myUrlBase = $MY_URL -replace '/personal$', ''
 $oneDriveUrl = "$myUrlBase/personal/$upnPrefix"
 $baseDocUrl = "/personal/$upnPrefix/Documents"
 
+# Scope: prefijo de ruta en OneDrive y en SharePoint destino
+$scopeSourcePrefix = if ($ScopeFolder -ne "") { "$baseDocUrl/$ScopeFolder".TrimEnd('/') } else { "" }
+$scopeDestPrefix   = if ($ScopeFolder -ne "") { "/$DESTINATION_LIBRARY/$ScopeFolder".TrimEnd('/') } else { "" }
+
 Write-Host "`n=== COMPARACIÓN DE ALMACENAMIENTO ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Usuario: $UserEmail" -ForegroundColor Yellow
+if ($ScopeFolder -ne "") {
+    Write-Host "Scope:   $ScopeFolder" -ForegroundColor Yellow
+}
 Write-Host "⚠️  ADVERTENCIA: Los reportes generados pueden contener información sensible." -ForegroundColor Yellow
 Write-Host "   No compartir los archivos CSV fuera de la organización." -ForegroundColor DarkGray
 Write-Host ""
@@ -72,7 +82,10 @@ try {
     $sourceConn = Connect-PnPOnline -Url $oneDriveUrl -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection
 
     Write-Host "  Escaneando archivos (puede tardar si hay muchos archivos)..." -ForegroundColor DarkGray
-    $sourceFiles = Get-PnPListItem -List "Documents" -PageSize 1000 -Connection $sourceConn | Where-Object { $_.FileSystemObjectType -eq "File" }
+    $sourceFiles = Get-PnPListItem -List "Documents" -PageSize 1000 -Connection $sourceConn | Where-Object {
+        $_.FileSystemObjectType -eq "File" -and
+        ($scopeSourcePrefix -eq "" -or $_.FieldValues.FileRef.StartsWith($scopeSourcePrefix, [System.StringComparison]::InvariantCultureIgnoreCase))
+    }
     Write-Host "  Archivos encontrados: $($sourceFiles.Count)" -ForegroundColor Cyan
 
     # Separar archivos: excluidos vs a migrar
@@ -153,7 +166,10 @@ try {
     $destConn = Connect-PnPOnline -Url $DESTINATION_SITE_URL -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection
 
     Write-Host "  Escaneando archivos (puede tardar si hay muchos archivos)..." -ForegroundColor DarkGray
-    $destFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize 1000 -Connection $destConn | Where-Object { $_.FileSystemObjectType -eq "File" }
+    $destFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize 1000 -Connection $destConn | Where-Object {
+        $_.FileSystemObjectType -eq "File" -and
+        ($scopeDestPrefix -eq "" -or $_.FieldValues.FileRef.StartsWith($scopeDestPrefix, [System.StringComparison]::InvariantCultureIgnoreCase))
+    }
     Write-Host "  Archivos encontrados: $($destFiles.Count)" -ForegroundColor Cyan
 
     $totalSizeBytesDestino = 0
