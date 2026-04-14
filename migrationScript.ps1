@@ -277,7 +277,7 @@ foreach ($email in $userList) {
                             # Si fue migrado pero el origen se modificó hace más de 20 minutos
                             # respecto a la fecha de migración, se sobreescribe para no perder cambios
                             if ($checkpoint.ContainsKey($sourceRelUrl)) {
-                                $migratedAt   = [datetime]::Parse($checkpoint[$sourceRelUrl])
+                                $migratedAt   = [datetime]::Parse($checkpoint[$sourceRelUrl], [System.Globalization.CultureInfo]::InvariantCulture)
                                 $sourceModified = $file.FieldValues.Modified
                                 if (($sourceModified - $migratedAt).TotalMinutes -gt 20) {
                                     Write-Host "    [ACTUALIZAR] $sourceRelUrl (modificado $([math]::Round(($sourceModified - $migratedAt).TotalMinutes,1)) min después de migrar)" -ForegroundColor Yellow
