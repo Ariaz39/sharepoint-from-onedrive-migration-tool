@@ -77,63 +77,87 @@ Write-Host "⚠️  ADVERTENCIA: Los reportes generados pueden contener informac
 Write-Host "   No compartir los archivos CSV fuera de la organización." -ForegroundColor DarkGray
 Write-Host ""
 
+# Función auxiliar: escaneo paginado por carpeta (evita timeout en bibliotecas grandes)
+function Get-FilesPagedByFolder {
+    param([string]$List, [string]$FolderUrl, $Conn, [int]$PageSize)
+    $result   = [System.Collections.Generic.List[object]]::new()
+    $position = $null
+    $caml     = "<View Scope='FilesOnly'><RowLimit Paged='TRUE'>$PageSize</RowLimit></View>"
+    do {
+        $pageArgs = @{ List = $List; Query = $caml; Connection = $Conn; FolderServerRelativeUrl = $FolderUrl; PageSize = $PageSize; ErrorAction = "Stop" }
+        if ($position) { $pageArgs["ListItemCollectionPosition"] = $position }
+        $page     = Get-PnPListItem @pageArgs
+        $position = $page.ListItemCollectionPosition
+        $page | Where-Object { $_.FileSystemObjectType -eq "File" } | ForEach-Object { $result.Add($_) }
+    } while ($position)
+    return ,$result
+}
+
+function Get-AllSubFoldersCheck {
+    param([string]$FolderUrl, $Conn)
+    $queue  = [System.Collections.Generic.Queue[string]]::new()
+    $result = [System.Collections.Generic.List[string]]::new()
+    $queue.Enqueue($FolderUrl)
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $result.Add($current)
+        try {
+            $folder = Get-PnPFolder -Url $current -Connection $Conn -ErrorAction Stop
+            $folder.Context.Load($folder.Folders)
+            $folder.Context.ExecuteQuery()
+            foreach ($sf in $folder.Folders) {
+                if ($sf.Name -notin @('Forms', '_vti_cnf')) { $queue.Enqueue($sf.ServerRelativeUrl) }
+            }
+        } catch {}
+    }
+    return ,$result
+}
+
 # ONEDRIVE
 Write-Host "=== ONEDRIVE (Origen) ===" -ForegroundColor Green
 try {
     Write-Host "  Conectando a OneDrive..." -ForegroundColor DarkGray
     $sourceConn = Connect-PnPOnline -Url $oneDriveUrl -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection
 
-    Write-Host "  Escaneando archivos (puede tardar si hay muchos archivos)..." -ForegroundColor DarkGray
-    $sourceFiles = Get-PnPListItem -List "Documents" -PageSize 1000 -Connection $sourceConn | Where-Object {
-        $_.FileSystemObjectType -eq "File" -and
-        ($scopeSourcePrefix -eq "" -or $_.FieldValues.FileRef.StartsWith($scopeSourcePrefix, [System.StringComparison]::InvariantCultureIgnoreCase))
-    }
-    Write-Host "  Archivos encontrados: $($sourceFiles.Count)" -ForegroundColor Cyan
+    $scanRoot = if ($scopeSourcePrefix -ne "") { $scopeSourcePrefix } else { $baseDocUrl }
+    Write-Host "  Expandiendo árbol de carpetas: $scanRoot" -ForegroundColor DarkGray
+    $sourceFolders = Get-AllSubFoldersCheck -FolderUrl $scanRoot -Conn $sourceConn
+    Write-Host "  Escaneando $($sourceFolders.Count) carpetas (paginado)..." -ForegroundColor DarkGray
 
-    # Separar archivos: excluidos vs a migrar
-    $totalSizeBytes = 0
-    $fileCount = 0
+    $totalSizeBytes    = 0
+    $fileCount         = 0
     $excludedSizeBytes = 0
     $excludedFileCount = 0
     $toMigrateSizeBytes = 0
     $toMigrateFileCount = 0
-    $excludedByFolder = @{}  # Contador por carpeta excluida
+    $excludedByFolder  = @{}
+    $zeroSizeSource    = [System.Collections.Generic.List[string]]::new()
 
-    $zeroSizeSource = [System.Collections.Generic.List[string]]::new()
+    foreach ($folder in $sourceFolders) {
+        $pageFiles = Get-FilesPagedByFolder -List "Documents" -FolderUrl $folder -Conn $sourceConn -PageSize 500
+        foreach ($file in $pageFiles) {
+            $size = [long]($file.FieldValues.File_x0020_Size)
+            $totalSizeBytes += $size
+            $fileCount++
+            if ($size -eq 0) { $zeroSizeSource.Add($file.FieldValues.FileRef) }
 
-    foreach ($file in $sourceFiles) {
-        # File_x0020_Size puede ser null en algunos tipos — tratar null/0 como 0 pero siempre contar el archivo
-        $size = [long]($file.FieldValues.File_x0020_Size)
-        $totalSizeBytes += $size
-        $fileCount++
+            $sourceRelUrl   = $file.FieldValues.FileRef
+            $pathParts      = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
+            $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
 
-        if ($size -eq 0) { $zeroSizeSource.Add($file.FieldValues.FileRef) }
-
-        # Verificar si está en carpeta excluida
-        $sourceRelUrl = $file.FieldValues.FileRef
-        $pathParts = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
-        $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
-
-        $isExcluded = $false
-        foreach ($excl in $excludedList) {
-            if ($directoryParts -contains $excl) {
-                $isExcluded = $true
-                $excludedSizeBytes += $size
-                $excludedFileCount++
-
-                # Contar por carpeta excluida
-                if (-not $excludedByFolder.ContainsKey($excl)) {
-                    $excludedByFolder[$excl] = @{ Count = 0; Size = 0 }
+            $isExcluded = $false
+            foreach ($excl in $excludedList) {
+                if ($directoryParts -contains $excl) {
+                    $isExcluded = $true
+                    $excludedSizeBytes += $size
+                    $excludedFileCount++
+                    if (-not $excludedByFolder.ContainsKey($excl)) { $excludedByFolder[$excl] = @{ Count = 0; Size = 0 } }
+                    $excludedByFolder[$excl].Count++
+                    $excludedByFolder[$excl].Size += $size
+                    break
                 }
-                $excludedByFolder[$excl].Count++
-                $excludedByFolder[$excl].Size += $size
-                break
             }
-        }
-
-        if (-not $isExcluded) {
-            $toMigrateSizeBytes += $size
-            $toMigrateFileCount++
+            if (-not $isExcluded) { $toMigrateSizeBytes += $size; $toMigrateFileCount++ }
         }
     }
 
@@ -142,7 +166,7 @@ try {
         $zeroSizeSource | ForEach-Object { Write-Host "    - $_" -ForegroundColor DarkGray }
     }
 
-    $totalSizeGB = [math]::Round($totalSizeBytes / 1GB, 2)
+    $totalSizeGB    = [math]::Round($totalSizeBytes / 1GB, 2)
     $excludedSizeGB = [math]::Round($excludedSizeBytes / 1GB, 2)
     $toMigrateSizeGB = [math]::Round($toMigrateSizeBytes / 1GB, 2)
 
@@ -152,7 +176,6 @@ try {
     Write-Host "  Archivos excluidos: $excludedFileCount" -ForegroundColor DarkGray
     Write-Host "  Tamaño excluido: $excludedSizeGB GB" -ForegroundColor DarkGray
 
-    # Desglose por carpeta excluida
     if ($excludedByFolder.Count -gt 0) {
         Write-Host "  Desglose de exclusiones:" -ForegroundColor DarkGray
         foreach ($folder in $excludedByFolder.Keys | Sort-Object) {
@@ -175,23 +198,25 @@ try {
     Write-Host "  Conectando a SharePoint..." -ForegroundColor DarkGray
     $destConn = Connect-PnPOnline -Url $DESTINATION_SITE_URL -ClientId $CLIENT_ID -Tenant $TENANT -CertificatePath $certPath -CertificatePassword $certPassword -ReturnConnection
 
-    Write-Host "  Escaneando archivos (puede tardar si hay muchos archivos)..." -ForegroundColor DarkGray
-    $destFiles = Get-PnPListItem -List $DESTINATION_LIBRARY -PageSize 1000 -Connection $destConn | Where-Object {
-        $_.FileSystemObjectType -eq "File" -and
-        ($scopeDestPrefix -eq "" -or $_.FieldValues.FileRef.StartsWith($scopeDestPrefix, [System.StringComparison]::InvariantCultureIgnoreCase))
-    }
-    Write-Host "  Archivos encontrados: $($destFiles.Count)" -ForegroundColor Cyan
+    $destScanRoot = if ($scopeDestPrefix -ne "") { $scopeDestPrefix } else { "/sites/$destSiteName/$DESTINATION_LIBRARY" }
+    Write-Host "  Expandiendo árbol de carpetas: $destScanRoot" -ForegroundColor DarkGray
+    $destFolders = Get-AllSubFoldersCheck -FolderUrl $destScanRoot -Conn $destConn
+    Write-Host "  Escaneando $($destFolders.Count) carpetas (paginado)..." -ForegroundColor DarkGray
 
     $totalSizeBytesDestino = 0
-    $fileCountDestino = 0
-    $zeroSizeDest = [System.Collections.Generic.List[string]]::new()
+    $fileCountDestino      = 0
+    $zeroSizeDest          = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($file in $destFiles) {
-        $size = [long]($file.FieldValues.File_x0020_Size)
-        $totalSizeBytesDestino += $size
-        $fileCountDestino++
-        if ($size -eq 0) { $zeroSizeDest.Add($file.FieldValues.FileRef) }
+    foreach ($folder in $destFolders) {
+        $pageFiles = Get-FilesPagedByFolder -List $DESTINATION_LIBRARY -FolderUrl $folder -Conn $destConn -PageSize 500
+        foreach ($file in $pageFiles) {
+            $size = [long]($file.FieldValues.File_x0020_Size)
+            $totalSizeBytesDestino += $size
+            $fileCountDestino++
+            if ($size -eq 0) { $zeroSizeDest.Add($file.FieldValues.FileRef) }
+        }
     }
+    Write-Host "  Archivos encontrados: $fileCountDestino" -ForegroundColor Cyan
 
     if ($zeroSizeDest.Count -gt 0) {
         Write-Host "  Archivos con tamaño 0 o nulo en destino: $($zeroSizeDest.Count)" -ForegroundColor Yellow
