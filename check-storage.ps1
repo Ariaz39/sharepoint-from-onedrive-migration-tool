@@ -62,8 +62,10 @@ $oneDriveUrl = "$myUrlBase/personal/$upnPrefix"
 $baseDocUrl = "/personal/$upnPrefix/Documents"
 
 # Scope: prefijo de ruta en OneDrive y en SharePoint destino
+# El FileRef en SharePoint destino tiene la forma: /sites/<site>/<library>/<ScopeFolder>/...
+$destSiteName      = $DESTINATION_SITE_URL.Split('/')[-1]
 $scopeSourcePrefix = if ($ScopeFolder -ne "") { "$baseDocUrl/$ScopeFolder".TrimEnd('/') } else { "" }
-$scopeDestPrefix   = if ($ScopeFolder -ne "") { "/$DESTINATION_LIBRARY/$ScopeFolder".TrimEnd('/') } else { "" }
+$scopeDestPrefix   = if ($ScopeFolder -ne "") { "/sites/$destSiteName/$DESTINATION_LIBRARY/$ScopeFolder".TrimEnd('/') } else { "" }
 
 Write-Host "`n=== COMPARACIÓN DE ALMACENAMIENTO ===" -ForegroundColor Cyan
 Write-Host ""
