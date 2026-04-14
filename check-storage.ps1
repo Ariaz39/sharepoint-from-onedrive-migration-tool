@@ -99,39 +99,47 @@ try {
     $toMigrateFileCount = 0
     $excludedByFolder = @{}  # Contador por carpeta excluida
 
+    $zeroSizeSource = [System.Collections.Generic.List[string]]::new()
+
     foreach ($file in $sourceFiles) {
-        $size = $file.FieldValues.File_x0020_Size
-        if ($size) {
-            $totalSizeBytes += $size
-            $fileCount++
+        # File_x0020_Size puede ser null en algunos tipos — tratar null/0 como 0 pero siempre contar el archivo
+        $size = [long]($file.FieldValues.File_x0020_Size)
+        $totalSizeBytes += $size
+        $fileCount++
 
-            # Verificar si está en carpeta excluida
-            $sourceRelUrl = $file.FieldValues.FileRef
-            $pathParts = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
-            $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
+        if ($size -eq 0) { $zeroSizeSource.Add($file.FieldValues.FileRef) }
 
-            $isExcluded = $false
-            foreach ($excl in $excludedList) {
-                if ($directoryParts -contains $excl) {
-                    $isExcluded = $true
-                    $excludedSizeBytes += $size
-                    $excludedFileCount++
+        # Verificar si está en carpeta excluida
+        $sourceRelUrl = $file.FieldValues.FileRef
+        $pathParts = $sourceRelUrl.Replace($baseDocUrl, "").Trim('/').Split('/')
+        $directoryParts = if ($pathParts.Count -gt 1) { $pathParts[0..($pathParts.Count - 2)] } else { @() }
 
-                    # Contar por carpeta excluida
-                    if (-not $excludedByFolder.ContainsKey($excl)) {
-                        $excludedByFolder[$excl] = @{ Count = 0; Size = 0 }
-                    }
-                    $excludedByFolder[$excl].Count++
-                    $excludedByFolder[$excl].Size += $size
-                    break
+        $isExcluded = $false
+        foreach ($excl in $excludedList) {
+            if ($directoryParts -contains $excl) {
+                $isExcluded = $true
+                $excludedSizeBytes += $size
+                $excludedFileCount++
+
+                # Contar por carpeta excluida
+                if (-not $excludedByFolder.ContainsKey($excl)) {
+                    $excludedByFolder[$excl] = @{ Count = 0; Size = 0 }
                 }
-            }
-
-            if (-not $isExcluded) {
-                $toMigrateSizeBytes += $size
-                $toMigrateFileCount++
+                $excludedByFolder[$excl].Count++
+                $excludedByFolder[$excl].Size += $size
+                break
             }
         }
+
+        if (-not $isExcluded) {
+            $toMigrateSizeBytes += $size
+            $toMigrateFileCount++
+        }
+    }
+
+    if ($zeroSizeSource.Count -gt 0) {
+        Write-Host "  Archivos con tamaño 0 o nulo en origen: $($zeroSizeSource.Count)" -ForegroundColor Yellow
+        $zeroSizeSource | ForEach-Object { Write-Host "    - $_" -ForegroundColor DarkGray }
     }
 
     $totalSizeGB = [math]::Round($totalSizeBytes / 1GB, 2)
@@ -176,13 +184,18 @@ try {
 
     $totalSizeBytesDestino = 0
     $fileCountDestino = 0
+    $zeroSizeDest = [System.Collections.Generic.List[string]]::new()
 
     foreach ($file in $destFiles) {
-        $size = $file.FieldValues.File_x0020_Size
-        if ($size) {
-            $totalSizeBytesDestino += $size
-            $fileCountDestino++
-        }
+        $size = [long]($file.FieldValues.File_x0020_Size)
+        $totalSizeBytesDestino += $size
+        $fileCountDestino++
+        if ($size -eq 0) { $zeroSizeDest.Add($file.FieldValues.FileRef) }
+    }
+
+    if ($zeroSizeDest.Count -gt 0) {
+        Write-Host "  Archivos con tamaño 0 o nulo en destino: $($zeroSizeDest.Count)" -ForegroundColor Yellow
+        $zeroSizeDest | ForEach-Object { Write-Host "    - $_" -ForegroundColor DarkGray }
     }
 
     $totalSizeGBDestino = [math]::Round($totalSizeBytesDestino / 1GB, 2)
@@ -199,10 +212,14 @@ Write-Host "=== COMPARACIÓN ===" -ForegroundColor Cyan
 
 $diffFiles = $toMigrateFileCount - $fileCountDestino
 $diffSize = $toMigrateSizeGB - $totalSizeGBDestino
+$diffBytes = $toMigrateSizeBytes - $totalSizeBytesDestino
 $percentMigrated = if ($toMigrateFileCount -gt 0) { [math]::Round(($fileCountDestino / $toMigrateFileCount) * 100, 1) } else { 0 }
 
 Write-Host "  Archivos esperados (sin exclusiones): $toMigrateFileCount"
 Write-Host "  Archivos en SharePoint: $fileCountDestino"
+Write-Host "  Tamaño origen  (bytes exactos): $toMigrateSizeBytes"
+Write-Host "  Tamaño destino (bytes exactos): $totalSizeBytesDestino"
+Write-Host "  Diferencia exacta: $diffBytes bytes ($([math]::Round([math]::Abs($diffBytes)/1MB,2)) MB)"
 Write-Host "  Porcentaje migrado: $percentMigrated%" -ForegroundColor $(if ($percentMigrated -ge 99) { 'Green' } elseif ($percentMigrated -ge 95) { 'Yellow' } else { 'Red' })
 Write-Host ""
 
